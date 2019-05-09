@@ -16,6 +16,7 @@
 
 #include "src/clock.h"
 #include "src/profiler.h"
+#include "src/symbols.h"
 #include "src/throttler_api.h"
 #include "src/throttler_timed.h"
 
@@ -33,6 +34,8 @@ namespace cloud {
 namespace profiler {
 
 std::atomic<bool> Worker::enabled_;
+
+Worker* Worker::instance = NULL;
 
 void Worker::Start(JNIEnv *jni) {
   jclass cls = jni->FindClass("java/lang/Thread");
@@ -87,6 +90,8 @@ void Worker::ProfileThread(jvmtiEnv *jvmti_env, JNIEnv *jni_env, void *arg) {
   Worker *w = static_cast<Worker *>(arg);
   google::javaprofiler::NativeProcessInfo n("/proc/self/maps");
 
+  w->resetSymbols();
+
   std::unique_ptr<Throttler> t =
       FLAGS_cprof_profile_filename.empty()
           ? std::unique_ptr<Throttler>(new APIThrottler())
@@ -103,6 +108,11 @@ void Worker::ProfileThread(jvmtiEnv *jvmti_env, JNIEnv *jni_env, void *arg) {
       // Skip the collection and upload steps when profiling is disabled.
       continue;
     }
+    if (w->_native_lib_refresh++ % 10 == 0) {
+      LOG(INFO) << "refreshing symbol map";
+      w->resetSymbols();
+    }
+
     string profile;
     string pt = t->ProfileType();
     if (pt == kTypeCPU) {
@@ -129,6 +139,111 @@ void Worker::ProfileThread(jvmtiEnv *jvmti_env, JNIEnv *jni_env, void *arg) {
   }
   LOG(INFO) << "Exiting the profiling loop";
 }
+
+void Worker::addJavaMethod(const void* address, int length, jmethodID method) {
+    _jit_lock.lock();
+    _java_methods.add(address, length, method);
+    updateJitRange(address, (const char*)address + length);
+    _jit_lock.unlock();
+}
+
+void Worker::removeJavaMethod(const void* address, jmethodID method) {
+    _jit_lock.lock();
+    _java_methods.remove(address, method);
+    _jit_lock.unlock();
+}
+
+void Worker::addRuntimeStub(const void* address, int length, const char* name) {
+    _jit_lock.lock();
+    _runtime_stubs.add(address, length, name);
+    updateJitRange(address, (const char*)address + length);
+    _jit_lock.unlock();
+}
+
+void Worker::updateJitRange(const void* min_address, const void* max_address) {
+    if (min_address < _jit_min_address) _jit_min_address = min_address;
+    if (max_address > _jit_max_address) _jit_max_address = max_address;
+}
+
+bool Worker::addressInCode(const void* pc) {
+    // 1. Check if PC lies within JVM's compiled code cache
+    // Address in CodeCache is executable if it belongs to a Java method or a runtime stub
+    if (pc >= _jit_min_address && pc < _jit_max_address) {
+        _jit_lock.lockShared();
+        bool valid = _java_methods.find(pc) != NULL || _runtime_stubs.find(pc) != NULL;
+        _jit_lock.unlockShared();
+        return valid;
+    }
+
+    // 2. Check if PC belongs to executable code of shared libraries
+    for (int i = 0; i < _native_lib_count; i++) {
+        if (_native_libs[i]->contains(pc)) {
+            return true;
+        }
+    }
+
+    // This can be some other dynamically generated code, but we don't know it. Better stay safe.
+    return false;
+}
+
+void Worker::resetSymbols() {
+    for (int i = 0; i < _native_lib_count; i++) {
+        delete _native_libs[i];
+    }
+    _native_lib_count = Symbols::parseMaps(_native_libs, MAX_NATIVE_LIBS);
+    NativeCodeCache *libjvm = jvmLibrary();
+    if (libjvm != NULL) {
+      initJvmtiFunctions(libjvm);
+    }
+}
+
+void Worker::initJvmtiFunctions(NativeCodeCache* libjvm) {
+    if (_JvmtiEnv_GetStackTrace == NULL) {
+        // Find ThreadLocalStorage::thread() if exists
+        if (_ThreadLocalStorage_thread == NULL) {
+            _ThreadLocalStorage_thread = (void* (*)()) libjvm->findSymbol("_ZN18ThreadLocalStorage6threadEv");
+        }
+        // Fallback to ThreadLocalStorage::get_thread_slow()
+        if (_ThreadLocalStorage_thread == NULL) {
+            _ThreadLocalStorage_thread = (void* (*)()) libjvm->findSymbol("_ZN18ThreadLocalStorage15get_thread_slowEv");
+        }
+        // Fallback to Thread::current(), e.g. on Zing
+        if (_ThreadLocalStorage_thread == NULL) {
+            _ThreadLocalStorage_thread = (void* (*)()) libjvm->findSymbol("_ZN6Thread7currentEv");
+        }
+        // JvmtiEnv::GetStackTrace(JavaThread* java_thread, jint start_depth, jint max_frame_count, jvmtiFrameInfo* frame_buffer, jint* count_ptr)
+        if (_ThreadLocalStorage_thread != NULL) {
+            _JvmtiEnv_GetStackTrace = (jvmtiError (*)(void*, void*, jint, jint, jvmtiFrameInfo*, jint*))
+                libjvm->findSymbol("_ZN8JvmtiEnv13GetStackTraceEP10JavaThreadiiP15_jvmtiFrameInfoPi");
+        }
+
+        if (_JvmtiEnv_GetStackTrace == NULL) {
+            fprintf(stderr, "WARNING: Install JVM debug symbols to improve profile accuracy\n");
+        }
+    }
+}
+
+NativeCodeCache* Worker::jvmLibrary() {
+    const void* asgct = (const void*)google::javaprofiler::Asgct::GetAsgct();
+
+    for (int i = 0; i < _native_lib_count; i++) {
+        if (_native_libs[i]->contains(asgct)) {
+            return _native_libs[i];
+        }
+    }
+    return NULL;
+}
+
+const void* Worker::findSymbol(const char* name) {
+    for (int i = 0; i < _native_lib_count; i++) {
+        const void* address = _native_libs[i]->findSymbol(name);
+        if (address != NULL) {
+            return address;
+        }
+    }
+    return NULL;
+}
+
 
 }  // namespace profiler
 }  // namespace cloud

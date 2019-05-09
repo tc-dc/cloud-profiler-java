@@ -22,7 +22,9 @@
 #include <atomic>
 
 #include "src/threads.h"
+#include "src/codeCache.h"
 #include "third_party/javaprofiler/stacktraces.h"
+
 
 namespace cloud {
 namespace profiler {
@@ -94,6 +96,9 @@ class Profiler {
 
   // Number of samples where the stack aggregation failed.
   static std::atomic<int> unknown_stack_count_;
+
+  static bool fillTopFrame(const void* pc, JVMPI_CallFrame* frame);
+  static int getJavaTraceJvmti(jvmtiFrameInfo* jvmti_frames, JVMPI_CallFrame* frames, int max_depth);
 
   DISALLOW_COPY_AND_ASSIGN(Profiler);
 };

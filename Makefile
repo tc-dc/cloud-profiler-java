@@ -84,13 +84,16 @@ JAVAPROFILER_LIB_HEADERS = \
 
 SOURCES = \
 	$(JAVA_AGENT_PATH)/cloud_env.cc \
+	$(JAVA_AGENT_PATH)/codeCache.cc \
 	$(JAVA_AGENT_PATH)/config_dataflow_jni.cc \
 	$(JAVA_AGENT_PATH)/entry.cc \
 	$(JAVA_AGENT_PATH)/http.cc \
 	$(JAVA_AGENT_PATH)/pem_roots.cc \
 	$(JAVA_AGENT_PATH)/profiler.cc \
 	$(JAVA_AGENT_PATH)/proto.cc \
+	$(JAVA_AGENT_PATH)/stackFrame_x64.cc \
 	$(JAVA_AGENT_PATH)/string.cc \
+	$(JAVA_AGENT_PATH)/symbols_linux.cc \
 	$(JAVA_AGENT_PATH)/threads.cc \
 	$(JAVA_AGENT_PATH)/throttler_api.cc \
 	$(JAVA_AGENT_PATH)/throttler_timed.cc \
@@ -108,14 +111,19 @@ PROFILER_API_HEADERS = $(PROFILER_API_SOURCES:.pb.cc=.pb.h)
 JAVAPROFILER_LIB_HEADERS += $(JAVAPROFILER_LIB_SOURCES:.cc=.h)
 
 HEADERS = \
+	$(JAVA_AGENT_PATH)/arch.h \
 	$(JAVA_AGENT_PATH)/clock.h \
 	$(JAVA_AGENT_PATH)/cloud_env.h \
+	$(JAVA_AGENT_PATH)/codeCache.h \
 	$(JAVA_AGENT_PATH)/globals.h \
 	$(JAVA_AGENT_PATH)/http.h \
 	$(JAVA_AGENT_PATH)/pem_roots.h \
 	$(JAVA_AGENT_PATH)/profiler.h \
 	$(JAVA_AGENT_PATH)/proto.h \
+	$(JAVA_AGENT_PATH)/spinLock.h \
+	$(JAVA_AGENT_PATH)/stackFrame.h \
 	$(JAVA_AGENT_PATH)/string.h \
+	$(JAVA_AGENT_PATH)/symbols.h \
 	$(JAVA_AGENT_PATH)/threads.h \
 	$(JAVA_AGENT_PATH)/throttler.h \
 	$(JAVA_AGENT_PATH)/throttler_api.h \

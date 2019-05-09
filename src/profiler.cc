@@ -25,6 +25,9 @@
 #include "src/clock.h"
 #include "src/globals.h"
 #include "src/proto.h"
+#include "src/stackFrame.h"
+#include "src/worker.h"
+
 
 DEFINE_int32(cprof_wall_num_threads_cutoff, 4096,
              "Do not take wall profiles if more than this # of threads exist.");
@@ -63,6 +66,7 @@ void Profiler::Handle(int signum, siginfo_t *info, void *context) {
 
   JVMPI_CallTrace trace;
   JVMPI_CallFrame frames[kMaxFramesToCapture];
+  int max_depth = kMaxFramesToCapture;
 
   JNIEnv *env = google::javaprofiler::Accessors::CurrentJniEnv();
   trace.frames = frames;
@@ -74,7 +78,45 @@ void Profiler::Handle(int signum, siginfo_t *info, void *context) {
     // This is a java thread.
     google::javaprofiler::ASGCTType asgct =
         google::javaprofiler::Asgct::GetAsgct();
-    (*asgct)(&trace, kMaxFramesToCapture, context);
+    (*asgct)(&trace, max_depth, context);
+
+    if (trace.num_frames == google::javaprofiler::kUnknownJava) {
+        StackFrame top_frame(context);
+        uintptr_t pc = top_frame.pc(),
+                  sp = top_frame.sp(),
+                  fp = top_frame.fp();
+
+        bool is_entry_frame = false;
+        if (fillTopFrame((const void*)pc, trace.frames)) {
+          is_entry_frame = trace.frames->lineno == google::javaprofiler::kNativeFrameLineNum &&
+                             strcmp((const char*)trace.frames->method_id, "call_stub") == 0;
+          trace.frames++;
+          max_depth--;
+        }
+
+        if (top_frame.pop(is_entry_frame)) {
+          // Retry with the fixed context, but only if PC looks reasonable,
+          // otherwise AsyncGetCallTrace may crash
+          if (Worker::instance->addressInCode((const void*)top_frame.pc())) {
+            LOG(INFO) << "Retrying trace, addr is in code";
+            (*asgct)(&trace, max_depth, context);
+          }
+          
+          top_frame.restore(pc, sp, fp);
+
+          if (trace.num_frames > 0) {
+            LOG(INFO) << "Stack fixed, num frames is now " << trace.num_frames;
+          } else {
+            LOG(INFO) << "Unable to fix up stack";
+            // Restore previous context
+            trace.num_frames = google::javaprofiler::kUnknownJava;
+          }
+        }
+    } else if (trace.num_frames == google::javaprofiler::kGcActive) {
+        // While GC is running Java threads are known to be at safepoint
+        LOG(INFO) << "In GC, using java trace";
+        getJavaTraceJvmti((jvmtiFrameInfo*)frames, frames, max_depth);
+    }
 
     if (trace.num_frames < 0) {
       // Did not get a valid java trace.
@@ -335,6 +377,46 @@ bool WallProfiler::Collect() {
   signal(SIGPROF, SIG_IGN);
   Flush();
   return true;
+}
+
+bool Profiler::fillTopFrame(const void* pc, JVMPI_CallFrame* frame) {
+    jmethodID method = NULL;
+    Worker::instance->jitLockShared();
+
+    // Check if PC lies within JVM's compiled code cache
+    if (pc >= Worker::instance->getJitMin() && pc < Worker::instance->getJitMax()) {
+        if ((method = Worker::instance->getCodeCache()->find(pc)) != NULL) {
+            // PC belong to a JIT compiled method
+            frame->lineno = 0;
+            frame->method_id = method;
+        } else if ((method = Worker::instance->getNativeCodeCache()->find(pc)) != NULL) {
+            // PC belongs to a VM runtime stub
+            frame->lineno = google::javaprofiler::kNativeFrameLineNum;
+            frame->method_id = method;
+        }
+    }
+
+    Worker::instance->jitUnlockShared();
+    return method != NULL;
+}
+
+
+int Profiler::getJavaTraceJvmti(jvmtiFrameInfo* jvmti_frames, JVMPI_CallFrame* frames, int max_depth) {
+    // We cannot call pure JVM TI here, because it assumes _thread_in_native state,
+    // but allocation events happen in _thread_in_vm state,
+    // see https://github.com/jvm-profiling-tools/async-profiler/issues/64
+    void* thread = Worker::instance->_ThreadLocalStorage_thread();
+    int num_frames;
+    if (Worker::instance->_JvmtiEnv_GetStackTrace(NULL, thread, 0, max_depth, jvmti_frames, &num_frames) == 0 && num_frames > 0) {
+        // Profiler expects stack trace in AsyncGetCallTrace format; convert it now
+        for (int i = 0; i < num_frames; i++) {
+            frames[i].method_id = jvmti_frames[i].method;
+            frames[i].lineno = 0;
+        }
+        return num_frames;
+    }
+
+    return 0;
 }
 
 }  // namespace profiler
