@@ -93,9 +93,9 @@ RUN mkdir /tmp/openssl && cd /tmp/openssl && \
 RUN git clone --depth=1 --recursive -b v1.15.0 https://github.com/grpc/grpc.git /tmp/grpc && \
     cd /tmp/grpc && \
     cd third_party/protobuf && \
-    ./autogen.sh && ./configure --with-pic CXXFLAGS=-Os && make -j && make install && ldconfig && \
+    ./autogen.sh && ./configure --with-pic CXXFLAGS=-Os && make -j4 && make install && ldconfig && \
     cd ../.. && \
-    CPPFLAGS="-I /usr/local/ssl/include" make -j CONFIG=opt EMBED_OPENSSL=false V=1 HAS_SYSTEM_OPENSSL_NPN=0 && \
+    CPPFLAGS="-I /usr/local/ssl/include" make -j4 CONFIG=opt EMBED_OPENSSL=false V=1 HAS_SYSTEM_OPENSSL_NPN=0 && \
     CPPFLAGS="-I /usr/local/ssl/include" make CONFIG=opt EMBED_OPENSSL=false V=1 HAS_SYSTEM_OPENSSL_NPN=0 install && \
     rm -rf /tmp/grpc
 
